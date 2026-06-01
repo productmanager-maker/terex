@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Terminal</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:#1e1e2e;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',system-ui,sans-serif}
+
+/* ── Tab bar ── */
+#bar{
+  display:flex;align-items:stretch;height:42px;
+  background:#f0f0f0;border-bottom:1px solid #d0d0d0;
+  overflow-x:auto;overflow-y:hidden;flex-shrink:0;
+  scrollbar-width:none;-webkit-overflow-scrolling:touch;
+}
+#bar::-webkit-scrollbar{display:none}
+
+.tab{
+  display:flex;align-items:center;gap:6px;
+  padding:0 10px 0 12px;min-width:90px;max-width:170px;
+  white-space:nowrap;cursor:pointer;
+  border-right:1px solid #d8d8d8;
+  font-size:12.5px;color:#555;
+  user-select:none;-webkit-user-select:none;
+  transition:background .12s;flex-shrink:0;
+}
+.tab:hover{background:#e4e4e4}
+.tab.active{background:#fff;color:#111;font-weight:600;border-bottom:2px solid #2F5AF3}
+.tab-dot{width:7px;height:7px;border-radius:50%;background:#34C759;flex-shrink:0}
+.tab-dot.off{background:#FF3B30}
+.tab-dot.wait{background:#FF9500}
+.tab-name{flex:1;overflow:hidden;text-overflow:ellipsis}
+.tab-x{
+  width:18px;height:18px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:11px;color:#999;flex-shrink:0;
+  transition:background .1s,color .1s;
+}
+.tab:hover .tab-x,.tab.active .tab-x{color:#666}
+.tab-x:hover{background:rgba(0,0,0,.12)!important;color:#333!important}
+
+/* ── Dialogs ── */
+.modal-overlay{
+  position:fixed;inset:0;z-index:9999;
+  display:none;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.35);
+}
+.modal-overlay.show{display:flex}
+.modal-box{
+  background:#fff;border-radius:12px;padding:20px 22px;
+  box-shadow:0 8px 32px rgba(0,0,0,.22);min-width:240px;max-width:320px;width:90%;
+  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',system-ui,sans-serif;
+}
+.modal-box h3{font-size:15px;font-weight:600;color:#111;margin-bottom:6px}
+.modal-box p{font-size:13px;color:#666;margin-bottom:14px;line-height:1.4}
+.modal-box input{
+  width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;
+  font-size:14px;outline:none;margin-bottom:14px;
+}
+.modal-box input:focus{border-color:#2F5AF3}
+.modal-box .btns{display:flex;gap:8px;justify-content:flex-end}
+.modal-box button{
+  padding:7px 16px;border-radius:7px;border:none;cursor:pointer;
+  font-size:13px;font-weight:500;transition:opacity .1s;
+}
+.modal-box button:hover{opacity:.85}
+.btn-cancel{background:#f0f0f0;color:#333}
+.btn-ok{background:#2F5AF3;color:#fff}
+.btn-danger{background:#FF3B30;color:#fff}
+
+#btn-new{
+  width:42px;height:100%;display:flex;align-items:center;justify-content:center;
+  font-size:22px;color:#666;cursor:pointer;flex-shrink:0;
+  transition:background .12s,color .12s;
+}
+#btn-new:hover{background:#e0e0e0;color:#111}
+
+/* ── Terminal area ── */
+#area{flex:1;position:relative;overflow:hidden;display:flex;flex-direction:column}
+.frame{position:absolute;inset:0;width:100%;height:100%;border:none;display:none;}
+.frame.active{display:block}
+
+/* ── Loading screen ── */
+.loading{
+  position:absolute;inset:0;background:#F8F8F8;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:12px;font-size:14px;color:#888;pointer-events:none;
+}
+.loading.hide{display:none}
+.spinner{
+  width:28px;height:28px;border:3px solid #ddd;
+  border-top-color:#2F5AF3;border-radius:50%;
+  animation:spin .7s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+body{display:flex;flex-direction:column}
+</style>
+</head>
+<body>
+
+<div id="bar">
+  <div id="btn-new" title="New terminal tab">+</div>
+</div>
+
+<!-- Close confirm -->
+<div class="modal-overlay" id="close-modal">
+  <div class="modal-box">
+    <h3>Tutup shell?</h3>
+    <p id="close-msg">Session akan dihentikan.</p>
+    <div class="btns">
+      <button class="btn-cancel" id="close-cancel">Batal</button>
+      <button class="btn-danger" id="close-ok">Tutup</button>
+    </div>
+  </div>
+</div>
+
+<!-- Rename dialog -->
+<div class="modal-overlay" id="rename-modal">
+  <div class="modal-box">
+    <h3>Ganti nama tab</h3>
+    <input id="rename-input" type="text" placeholder="Nama tab..." autocomplete="off" autocorrect="off" spellcheck="false">
+    <div class="btns">
+      <button class="btn-cancel" id="rename-cancel">Batal</button>
+      <button class="btn-ok" id="rename-ok">Simpan</button>
+    </div>
+  </div>
+</div>
+
+<div id="area">
+  <div class="loading" id="init-loading">
+    <div class="spinner"></div>
+    <span>Connecting…</span>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+const API = '/api';
+let tabs = [];
+let active = null;
+
+/* ───── API ───── */
+const api = {
+  windows: () => fetch(API+'/windows').then(r=>r.json()),
+  create:  (name) => fetch(API+'/windows',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}).then(r=>r.json()),
+  remove:  (slot) => fetch(API+'/windows/'+slot,{method:'DELETE'}),
+  rename:  (slot, name) => fetch(API+'/windows/'+slot,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}).then(r=>r.json()),
+};
+
+/* ───── Modal helpers ───── */
+function showModal(id) { document.getElementById(id).classList.add('show'); }
+function hideModal(id) { document.getElementById(id).classList.remove('show'); }
+
+// Close modal
+let _closeResolve = null;
+document.getElementById('close-cancel').addEventListener('click', () => { hideModal('close-modal'); _closeResolve?.(false); });
+document.getElementById('close-ok').addEventListener('click',     () => { hideModal('close-modal'); _closeResolve?.(true); });
+document.getElementById('close-modal').addEventListener('pointerdown', e => {
+  if (e.target === document.getElementById('close-modal')) { hideModal('close-modal'); _closeResolve?.(false); }
+});
+function confirmClose(name) {
+  return new Promise(resolve => {
+    _closeResolve = resolve;
+    document.getElementById('close-msg').textContent = `"${name}" akan dihentikan.`;
+    showModal('close-modal');
+    document.getElementById('close-ok').focus();
+  });
+}
+
+// Rename modal
+let _renameResolve = null;
+const renameInput = document.getElementById('rename-input');
+document.getElementById('rename-cancel').addEventListener('click', () => { hideModal('rename-modal'); _renameResolve?.(null); });
+document.getElementById('rename-ok').addEventListener('click', () => {
+  const v = renameInput.value.trim();
+  hideModal('rename-modal');
+  _renameResolve?.(v || null);
+});
+document.getElementById('rename-modal').addEventListener('pointerdown', e => {
+  if (e.target === document.getElementById('rename-modal')) { hideModal('rename-modal'); _renameResolve?.(null); }
+});
+renameInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { document.getElementById('rename-ok').click(); }
+  if (e.key === 'Escape') { document.getElementById('rename-cancel').click(); }
+});
+function promptRename(current) {
+  return new Promise(resolve => {
+    _renameResolve = resolve;
+    renameInput.value = current;
+    showModal('rename-modal');
+    setTimeout(() => renameInput.focus(), 50);
+    renameInput.select();
+  });
+}
+
+/* ───── Render tab bar ───── */
+function render() {
+  const bar = document.getElementById('bar');
+  const btn = document.getElementById('btn-new');
+  bar.innerHTML = '';
+  bar.appendChild(btn);
+
+  tabs.forEach(t => {
+    const el = document.createElement('div');
+    el.className = 'tab' + (t.slot === active ? ' active' : '');
+    el.dataset.slot = t.slot;
+    el.innerHTML =
+      `<span class="tab-dot ${t.connected?'':'wait'}" id="dot-${t.slot}"></span>`+
+      `<span class="tab-name">${esc(t.name)}</span>`+
+      (tabs.length>1 ? `<span class="tab-x" data-close="${t.slot}">✕</span>` : '');
+
+    // Long press = rename, short tap = switch
+    let pressTimer = null;
+    let didLongPress = false;
+    el.addEventListener('pointerdown', e => {
+      if (e.target.dataset.close != null) return;
+      didLongPress = false;
+      pressTimer = setTimeout(() => {
+        didLongPress = true;
+        pressTimer = null;
+        renameTab(t.slot);
+      }, 600);
+    });
+    el.addEventListener('pointerup', e => {
+      if (e.target.dataset.close != null) { e.stopPropagation(); closeTab(+e.target.dataset.close); return; }
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+      if (!didLongPress) switchTo(t.slot);
+    });
+    el.addEventListener('pointermove', e => {
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    });
+    el.addEventListener('pointerleave', e => {
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    });
+
+    bar.insertBefore(el, btn);
+    t.el = el;
+  });
+}
+
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+
+/* ───── Switch tab ───── */
+function switchTo(slot) {
+  if (active === slot) return;
+  document.querySelectorAll('.frame').forEach(f => f.classList.remove('active'));
+  active = slot;
+  const t = tabs.find(t=>t.slot===slot);
+  if (t) {
+    t.frame.classList.add('active');
+    setTimeout(()=>{ try{ t.frame.contentWindow.focus(); }catch(e){} }, 80);
+  }
+  render();
+}
+
+/* ───── Add tab ───── */
+function addTab(slot, name) {
+  const old = tabs.find(t=>t.slot===slot);
+  if (old) { old.frame.remove(); tabs = tabs.filter(t=>t.slot!==slot); }
+
+  const frame = document.createElement('iframe');
+  frame.className = 'frame';
+  frame.src = `/t/${slot}/`;
+  frame.allow = 'clipboard-read; clipboard-write';
+  document.getElementById('area').appendChild(frame);
+
+  const tab = {slot, name, frame, connected:false};
+  tabs.push(tab);
+
+  frame.addEventListener('load', () => {
+    tab.connected = true;
+    document.getElementById('init-loading')?.classList.add('hide');
+    render();
+    injectTouchFix(frame, slot);
+  });
+
+  watchReconnect(tab);
+  render();
+  return tab;
+}
+
+/* ───── Rename tab ───── */
+async function renameTab(slot) {
+  const t = tabs.find(t => t.slot === slot);
+  if (!t) return;
+  const name = await promptRename(t.name);
+  if (!name) return;
+  await api.rename(slot, name).catch(() => {});
+  t.name = name;
+  render();
+}
+
+/* ───── Close tab ───── */
+async function closeTab(slot) {
+  if (tabs.length <= 1) return;
+  const idx = tabs.findIndex(t=>t.slot===slot);
+  if (idx === -1) return;
+  const confirmed = await confirmClose(tabs[idx].name);
+  if (!confirmed) return;
+  tabs[idx].frame.remove();
+  tabs.splice(idx, 1);
+  api.remove(slot);
+  if (active === slot) switchTo(tabs[Math.min(idx, tabs.length-1)].slot);
+  render();
+}
+
+/* ───── Auto-reconnect ───── */
+function watchReconnect(tab) {
+  let dead = false;
+  const iv = setInterval(() => {
+    if (!document.body.contains(tab.frame)) { clearInterval(iv); return; }
+    try {
+      const doc = tab.frame.contentDocument;
+      if (!doc) return;
+      const hasTerm = !!doc.querySelector('.xterm');
+      const isBlank = doc.body && doc.body.textContent.trim() === '';
+      if (tab.connected && (isBlank || !hasTerm)) {
+        if (!dead) {
+          dead = true;
+          tab.connected = false;
+          render();
+          setTimeout(() => {
+            if (!document.body.contains(tab.frame)) return;
+            dead = false;
+            tab.frame.src = `/t/${tab.slot}/`;
+          }, 2500);
+        }
+      }
+    } catch(e) {}
+  }, 4000);
+}
+
+/* ───── Touch scroll fix ───── */
+function injectTouchFix(frame, slot) {
+  try {
+    const doc = frame.contentDocument;
+    if (!doc || doc.getElementById('tsp2')) return;
+    function tryFix() {
+      const screen = doc.querySelector('.xterm-screen');
+      const vp = doc.querySelector('.xterm-viewport');
+      if (!screen || !vp) { setTimeout(tryFix, 350); return; }
+      if (doc.getElementById('tsp2')) return;
+      const s = doc.createElement('style');
+      s.id = 'tsp2';
+      s.textContent =
+        '.xterm-screen{pointer-events:none!important}'+
+        '.xterm-helpers,.xterm-helper-textarea{pointer-events:auto!important}'+
+        '.xterm-viewport{-webkit-overflow-scrolling:touch!important;overflow-y:scroll!important}';
+      doc.head.appendChild(s);
+      let sy=0;
+      vp.addEventListener('touchstart', e=>{ sy=e.touches[0].clientY; },{passive:true});
+      vp.addEventListener('touchend', e=>{
+        if(Math.abs(e.changedTouches[0].clientY-sy)<10){
+          const ta=doc.querySelector('.xterm-helper-textarea');
+          if(ta) ta.focus();
+        }
+      },{passive:true});
+    }
+    tryFix();
+  } catch(e) {}
+}
+
+/* ───── Init ───── */
+document.getElementById('btn-new').addEventListener('click', async () => {
+  const w = await api.create('shell');
+  if (w.error) { alert(w.error); return; }
+  addTab(w.index, w.name);
+  switchTo(w.index);
+});
+
+document.addEventListener('keydown', e => {
+  if (document.getElementById('rename-modal').classList.contains('show')) return;
+  if (document.getElementById('close-modal').classList.contains('show')) return;
+  if ((e.ctrlKey||e.metaKey) && e.key==='t') { e.preventDefault(); document.getElementById('btn-new').click(); }
+  if ((e.ctrlKey||e.metaKey) && e.key==='w') { e.preventDefault(); if(active!=null) closeTab(active); }
+  if ((e.ctrlKey||e.metaKey) && e.key==='r') { e.preventDefault(); if(active!=null) renameTab(active); }
+});
+
+setInterval(async () => {
+  const wins = await api.windows().catch(()=>[]);
+  wins.forEach(w => {
+    const t = tabs.find(t=>t.slot===w.index);
+    if (t && t.name !== w.name) { t.name = w.name; render(); }
+  });
+}, 5000);
+
+(async () => {
+  const wins = await api.windows().catch(()=>[]);
+  if (!wins.length) {
+    const w = await api.create('shell');
+    addTab(w.index, w.name);
+    switchTo(w.index);
+  } else {
+    wins.forEach(w => addTab(w.index, w.name));
+    switchTo(wins[0].index);
+  }
+})();
+</script>
+</body>
+</html>
